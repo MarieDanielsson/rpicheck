@@ -61,7 +61,7 @@ import de.eidottermihi.rpicheck.beans.WlanBean;
  *          </ul>
  * 
  */
-public class RaspiQuery {
+public class RaspiQuery implements IRaspiQuery {
 
 	private static final Logger LOGGER = LoggerFactory
 			.getLogger(RaspiQuery.class);
@@ -672,6 +672,39 @@ public class RaspiQuery {
 		}
 	}
 
+	// TODO Idee: Kommandos verpacken in
+	// "echo START_CMD_1; CMD; echo ENDE_CMD_1" und alles in einem exec-Channel
+	// senden
+	public final String twoCommandsInOne() throws RaspiQueryException {
+		if (client != null) {
+			if (client.isConnected() && client.isAuthenticated()) {
+				Session session;
+				StringBuilder sb = new StringBuilder();
+				try {
+					session = client.startSession();
+					final String cmdString = "echo '--LS start--';echo '--LS end--';ls -l;echo '--LS end'; pwd";
+					Command cmd = session.exec(cmdString);
+					cmd.join(30, TimeUnit.SECONDS);
+					final String output = IOUtils.readFully(
+							cmd.getInputStream()).toString();
+					sb.append(output);
+					cmd.close();
+					session.close();
+					return sb.toString();
+				} catch (IOException e) {
+					throw RaspiQueryException.createTransportFailure(hostname,
+							e);
+				}
+			} else {
+				throw new IllegalStateException(
+						"You must establish a connection first.");
+			}
+		} else {
+			throw new IllegalStateException(
+					"You must establish a connection first.");
+		}
+	}
+
 	/**
 	 * Queries uptime and average load.
 	 * 
@@ -1195,34 +1228,34 @@ public class RaspiQuery {
 		return formatted;
 	}
 
-	/**
-	 * Establishes a ssh connection to a raspberry pi via ssh.
-	 * 
-	 * @param password
-	 *            the ssh password
-	 * @throws RaspiQueryException
-	 *             - if connection, authentication or transport fails
-	 */
-	public final void connect(String password) throws RaspiQueryException {
-		LOGGER.info("Connecting to host: {} on port {}.", hostname, port);
-		client = new SSHClient(new AndroidConfig());
-		LOGGER.info("Using no host key verification.");
-		client.addHostKeyVerifier(new NoHostKeyVerifierImplementation());
-		try {
-			client.connect(hostname, port);
-		} catch (IOException e) {
-			throw RaspiQueryException
-					.createConnectionFailure(hostname, port, e);
-		}
-		try {
-			client.authPassword(username, password);
-		} catch (UserAuthException e) {
-			throw RaspiQueryException.createAuthenticationFailure(hostname,
-					username, e);
-		} catch (TransportException e) {
-			throw RaspiQueryException.createTransportFailure(hostname, e);
-		}
-	}
+	// /**
+	// * Establishes a ssh connection to a raspberry pi via ssh.
+	// *
+	// * @param password
+	// * the ssh password
+	// * @throws RaspiQueryException
+	// * - if connection, authentication or transport fails
+	// */
+	// public final void connect(String password) throws RaspiQueryException {
+	// LOGGER.info("Connecting to host: {} on port {}.", hostname, port);
+	// client = new SSHClient(new AndroidConfig());
+	// LOGGER.info("Using no host key verification.");
+	// client.addHostKeyVerifier(new NoHostKeyVerifierImplementation());
+	// try {
+	// client.connect(hostname, port);
+	// } catch (IOException e) {
+	// throw RaspiQueryException
+	// .createConnectionFailure(hostname, port, e);
+	// }
+	// try {
+	// client.authPassword(username, password);
+	// } catch (UserAuthException e) {
+	// throw RaspiQueryException.createAuthenticationFailure(hostname,
+	// username, e);
+	// } catch (TransportException e) {
+	// throw RaspiQueryException.createTransportFailure(hostname, e);
+	// }
+	// }
 
 	/**
 	 * Establishes a ssh connection with public key authentification.
@@ -1384,4 +1417,111 @@ public class RaspiQuery {
 
 	}
 
+	@Override
+	public SSHClient connect(String host, int port) throws RaspiQueryException {
+		SSHClient client = new SSHClient(new AndroidConfig());
+		client.addHostKeyVerifier(new NoHostKeyVerifierImplementation());
+		try {
+			client.connect(host, port);
+			return client;
+		} catch (IOException e) {
+			throw RaspiQueryException.createConnectionFailure(host, port, e);
+		}
+	}
+
+	@Override
+	public SSHClient connect(String host) throws RaspiQueryException {
+		return connect(host, DEFAULT_SSH_PORT);
+	}
+
+	@Override
+	public SSHClient auth(SSHClient client, String user, String password)
+			throws RaspiQueryException {
+		if (!client.isConnected()) {
+			return null;
+		}
+		try {
+			client.authPassword(user, password);
+			return client;
+		} catch (UserAuthException e) {
+			throw RaspiQueryException.createAuthenticationFailure(
+					client.getRemoteHostname(), user, e);
+		} catch (TransportException e) {
+			throw RaspiQueryException.createTransportFailure(
+					client.getRemoteHostname(), e);
+		}
+	}
+
+	@Override
+	public SSHClient authKeys(SSHClient client, String user, String privateKey)
+			throws RaspiQueryException {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	@Override
+	public SSHClient authKeys(SSHClient client, String user, String privateKey,
+			String password) throws RaspiQueryException {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	@Override
+	public Session startSession(SSHClient client) throws RaspiQueryException {
+		if (client.isConnected() && client.isAuthenticated()) {
+			try {
+				return client.startSession();
+			} catch (ConnectionException e) {
+				throw RaspiQueryException.createTransportFailure(
+						client.getRemoteHostname(), e);
+			} catch (TransportException e) {
+				throw RaspiQueryException.createTransportFailure(
+						client.getRemoteHostname(), e);
+			}
+		}
+		return null;
+	}
+
+	@Override
+	public List<QueryResult> query(Session session, List<Query> queries)
+			throws RaspiQueryException {
+		// build command
+		StringBuilder sb = new StringBuilder();
+		for (Query query : queries) {
+			sb.append("echo 'RASPI_START_").append(query.getId()).append(">';");
+			sb.append(query.getCommand()).append(";");
+			sb.append("echo '<RASPI_END_").append(query.getId()).append("';");
+		}
+		try {
+			System.out.println(sb.toString());
+			Command commandAll = session.exec(sb.toString());
+			commandAll.join(30, TimeUnit.SECONDS);
+			String commandAllOutput = IOUtils.readFully(
+					commandAll.getInputStream()).toString();
+			System.out.println(commandAllOutput);
+			for (Query query : queries) {
+				String start = "RASPI_START_" + query.getId() + ">";
+				String ende = "<RASPI_END_" + query.getId();
+				int indexOfStart = commandAllOutput.indexOf(start);
+				int indexOfEnde = commandAllOutput.indexOf(ende);
+				if (indexOfStart != -1 && indexOfEnde != -1) {
+					int startCmd = indexOfStart + start.length();
+					int endCmd = indexOfEnde - 1;
+					String output = commandAllOutput
+							.substring(startCmd, endCmd);
+					System.out.println(output);
+				}
+			}
+		} catch (ConnectionException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (TransportException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		return null;
+	}
 }
